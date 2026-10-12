@@ -17,6 +17,9 @@ const TYPES := {
 	"dummy": {"name": "Манекен", "hp": 9999.0, "speed": 0.0, "damage": 0.0, "radius": 14.0, "color": Color(0.7, 0.55, 0.35)},
 }
 
+const GRAVITY := 1400.0
+const MAX_FALL := 900.0
+
 var type := "slime"
 var display_name := ""
 var max_hp := 30.0
@@ -26,13 +29,18 @@ var damage := 10.0
 var radius := 12.0
 var color := Color.WHITE
 var is_boss := false
+var flying := false
 
-var cave = null          # ссылка на комнату (для поиска пути и призыва)
+var cave = null          # ссылка на комнату (для призыва)
 var world = null         # world_tiles
 
 var _player = null
 var _knock := Vector2.ZERO
-var _desired := Vector2.ZERO
+var _vx := 0.0
+var _fly := Vector2.ZERO
+var _jump := 0.0
+var _air_vx := 0.0
+var _dir := 1.0
 var _slow_t := 0.0
 var _flash := 0.0
 var _contact_cd := 0.0
@@ -41,12 +49,11 @@ var _t := 0.0
 var _state := "idle"
 var _state_t := 0.0
 var _shoot_cd := 1.5
+var _hop_cd := 0.5
 var _los := false
 var _los_t := 0.0
-var _path := PackedVector2Array()
-var _path_i := 0
-var _path_t := 0.0
-var _charge_dir := Vector2.ZERO
+var _aware := false
+var _home := Vector2.ZERO
 var _phase := 0
 var _summoned := false
 var _wobble := 0.0
@@ -65,8 +72,10 @@ func setup(t: String, depth: int) -> void:
 	radius = d["radius"]
 	color = d["color"]
 	is_boss = t == "boss"
+	flying = t == "bat" or t == "shaman"
 	_wobble = randf() * TAU
 	_shoot_cd = randf_range(1.0, 2.2)
+	_dir = 1.0 if randf() < 0.5 else -1.0
 
 
 func _ready() -> void:
@@ -74,13 +83,15 @@ func _ready() -> void:
 	if is_boss:
 		add_to_group("boss")
 	collision_layer = 4
-	collision_mask = 1 | 4
-	motion_mode = CharacterBody2D.MOTION_MODE_FLOATING
+	collision_mask = 1 if flying else (1 | 16)
+	motion_mode = CharacterBody2D.MOTION_MODE_FLOATING if flying else CharacterBody2D.MOTION_MODE_GROUNDED
+	up_direction = Vector2.UP
 	var cs := CollisionShape2D.new()
 	var c := CircleShape2D.new()
-	c.radius = minf(radius, 14.0) if not is_boss else radius
+	c.radius = radius if is_boss else minf(radius, 14.0)
 	cs.shape = c
 	add_child(cs)
+	_home = global_position
 
 
 func _physics_process(delta: float) -> void:
@@ -88,150 +99,218 @@ func _physics_process(delta: float) -> void:
 	_flash -= delta
 	_contact_cd -= delta
 	_slow_t -= delta
+	_hop_cd -= delta
 	_knock = _knock.move_toward(Vector2.ZERO, 1100.0 * delta)
 	queue_redraw()
-	if type == "dummy":
-		velocity = _knock
-		move_and_slide()
-		return
-	if _wake > 0.0:
+	_vx = 0.0
+	_fly = Vector2.ZERO
+	if type != "dummy" and _wake <= 0.0:
+		_think(delta)
+	else:
 		_wake -= delta
-		return
+	_apply_motion(delta)
+
+	# Контактный урон
+	if _player != null and is_instance_valid(_player) and not _player.dead and _contact_cd <= 0.0 and damage > 0.0 and _wake <= 0.0:
+		var dist: float = _player.global_position.distance_to(global_position)
+		if dist < radius + 16.0:
+			_player.take_damage(damage, Vector2(signf(_player.global_position.x - global_position.x) * 320.0, -260.0))
+			_contact_cd = 0.8
+
+
+func _apply_motion(delta: float) -> void:
+	var slow := 0.5 if _slow_t > 0.0 else 1.0
+	if flying:
+		velocity = _fly * slow + _knock
+	else:
+		if is_on_floor():
+			velocity.x = _vx * slow + _knock.x
+		else:
+			velocity.x = (_air_vx if _air_vx != 0.0 else _vx) * slow + _knock.x
+		velocity.y = minf(velocity.y + GRAVITY * delta, MAX_FALL)
+		if _jump != 0.0:
+			velocity.y = _jump
+			_jump = 0.0
+	move_and_slide()
+	if not flying and is_on_floor() and velocity.y >= 0.0:
+		_air_vx = 0.0
+
+
+func _think(delta: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player")
 		if _player == null:
 			return
 	if _player.dead:
-		velocity = _knock
-		move_and_slide()
 		return
-
 	_los_t -= delta
 	if _los_t <= 0.0:
 		_los_t = 0.25
 		_los = _has_los(_player.global_position)
-
-	_desired = Vector2.ZERO
+	var dist := _to_player().length()
+	if not _aware and (dist < 140.0 or (_los and dist < 460.0)):
+		_aware = true
 	_state_t -= delta
 	match type:
 		"slime":
-			_ai_slime(delta)
+			_ai_slime()
 		"bat":
-			_ai_bat(delta)
+			_ai_bat()
 		"skeleton":
-			_ai_ranged(delta, 150.0, 300.0, 1.8)
+			_ai_skeleton(delta)
 		"shaman":
-			_ai_ranged(delta, 180.0, 320.0, 2.4)
+			_ai_shaman(delta)
 		"spider":
-			_ai_spider(delta)
+			_ai_spider()
 		"golem":
-			_ai_golem(delta)
+			_ai_golem()
 		"boss":
 			_ai_boss(delta)
 
-	var slow := 0.5 if _slow_t > 0.0 else 1.0
-	velocity = _desired * slow + _knock
-	move_and_slide()
 
-	# Контактный урон
-	if _contact_cd <= 0.0 and damage > 0.0:
-		var dist: float = _player.global_position.distance_to(global_position)
-		if dist < radius + 14.0:
-			_player.take_damage(damage, (_player.global_position - global_position).normalized() * 300.0)
-			_contact_cd = 0.8
-
-
-# ------------------------------------------------------------------ ИИ
+# ------------------------------------------------------------------ помощники
 func _to_player() -> Vector2:
 	return _player.global_position - global_position
 
 
-func _seek(target: Vector2, spd: float, delta: float) -> void:
-	var dir := (target - global_position).normalized()
-	if not _los and world != null:
-		_path_t -= delta
-		if _path_t <= 0.0 or _path_i >= _path.size():
-			_path = world.find_path(global_position, target)
-			_path_i = 1
-			_path_t = 0.5
-		if _path_i < _path.size():
-			var next: Vector2 = _path[_path_i]
-			if global_position.distance_to(next) < 10.0:
-				_path_i += 1
-			dir = (next - global_position).normalized()
-	_desired = dir * spd
+func _ground_ahead(d: float) -> bool:
+	if world == null:
+		return true
+	var foot: Vector2 = global_position + Vector2(d * (radius + 6.0), radius + 8.0)
+	var t: Vector2i = world.world_to_tile(foot)
+	return world.is_standable(t.x, t.y) and world.get_tile(t.x, t.y - 1) != 3
 
 
-func _ai_slime(delta: float) -> void:
-	# Прыжками: рывок — пауза
-	if _state_t <= 0.0:
-		_state = "rest" if _state == "hop" else "hop"
-		_state_t = 0.5 if _state == "hop" else 0.45
-	if _state == "hop":
-		_seek(_player.global_position, speed * 1.8, delta)
+func _blocked(d: float) -> bool:
+	return is_on_wall() and get_wall_normal().x * d < 0.0
 
 
-func _ai_bat(delta: float) -> void:
+func _patrol(spd: float) -> void:
+	if is_on_floor() and (not _ground_ahead(_dir) or _blocked(_dir)):
+		_dir = -_dir
+	_vx = _dir * spd
+
+
+## Идти к игроку. Не прыгает с обрыва, если игрок не ниже.
+func _chase(spd: float, can_jump: bool) -> void:
 	var to := _to_player()
-	var side := to.orthogonal().normalized() * sin(_t * 6.0 + _wobble) * 0.9
-	_seek(_player.global_position, speed, delta)
-	_desired = (_desired.normalized() + side).normalized() * speed
+	if absf(to.x) < 6.0:
+		return
+	_dir = signf(to.x)
+	if is_on_floor():
+		if _blocked(_dir):
+			if can_jump:
+				_jump = -560.0
+				_air_vx = _dir * spd
+			else:
+				return
+		elif not _ground_ahead(_dir) and to.y < 40.0:
+			if can_jump and to.y < -40.0:
+				_jump = -600.0
+				_air_vx = _dir * spd * 1.3
+			return
+	_vx = _dir * spd
 
 
-func _ai_ranged(delta: float, near: float, far: float, cooldown: float) -> void:
+# ------------------------------------------------------------------ ИИ
+func _ai_slime() -> void:
+	# Прыжками в сторону игрока
+	if is_on_floor() and _hop_cd <= 0.0:
+		var d := _dir
+		if _aware:
+			d = signf(_to_player().x)
+		elif not _ground_ahead(_dir) or _blocked(_dir):
+			_dir = -_dir
+			d = _dir
+		_dir = d
+		_jump = -430.0 if _aware else -300.0
+		_air_vx = d * speed * (1.8 if _aware else 1.0)
+		_hop_cd = randf_range(0.7, 1.1)
+
+
+func _ai_bat() -> void:
+	var to := _to_player()
+	if _aware and (_los or to.length() < 200.0):
+		var side := Vector2(0, sin(_t * 5.0 + _wobble) * 0.8)
+		_fly = (to.normalized() + side).normalized() * speed
+	else:
+		var target := _home + Vector2(cos(_t * 0.8 + _wobble) * 60.0, sin(_t * 1.3) * 25.0)
+		_fly = (target - global_position).limit_length(1.0) * speed * 0.5
+		if _aware:
+			_fly = to.normalized() * speed * 0.7
+
+
+func _ai_skeleton(delta: float) -> void:
 	var to := _to_player()
 	var dist := to.length()
-	if not _los or dist > far:
-		_seek(_player.global_position, speed, delta)
-	elif dist < near:
-		_desired = -to.normalized() * speed
-	else:
-		_desired = to.orthogonal().normalized() * speed * 0.5 * sin(_t + _wobble)
+	if not _aware:
+		_patrol(speed * 0.5)
+		return
+	_dir = signf(to.x) if to.x != 0.0 else _dir
+	if dist < 140.0 and _ground_ahead(-_dir):
+		_vx = -_dir * speed
+	elif dist > 330.0 or not _los:
+		_chase(speed, true)
 	_shoot_cd -= delta
-	if _shoot_cd <= 0.0 and _los and dist < far + 80.0:
-		_shoot_cd = cooldown * randf_range(0.85, 1.2)
-		if type == "shaman":
-			for i in 3:
-				_fire(to.normalized().rotated((i - 1) * 0.25), 300.0, "orb", Color(1.0, 0.45, 0.15))
-		else:
-			_fire(to.normalized(), 340.0, "bone", Color(0.9, 0.88, 0.8))
+	if _shoot_cd <= 0.0 and _los and dist < 460.0:
+		_shoot_cd = 1.8 * randf_range(0.85, 1.2)
+		_fire(to.normalized(), 360.0, "bone", Color(0.9, 0.88, 0.8))
 
 
-func _ai_spider(delta: float) -> void:
+func _ai_shaman(delta: float) -> void:
+	var to := _to_player()
+	if not _aware:
+		_fly = (_home + Vector2(sin(_t + _wobble) * 40.0, 0) - global_position).limit_length(1.0) * speed * 0.5
+		return
+	var want: Vector2 = _player.global_position + Vector2(-signf(to.x) * 230.0, -110.0 + sin(_t) * 30.0)
+	_fly = (want - global_position).limit_length(60.0) / 60.0 * speed
+	_shoot_cd -= delta
+	if _shoot_cd <= 0.0 and _los and to.length() < 480.0:
+		_shoot_cd = 2.4 * randf_range(0.85, 1.2)
+		for i in 3:
+			_fire(to.normalized().rotated((i - 1) * 0.22), 300.0, "orb", Color(1.0, 0.45, 0.15))
+
+
+func _ai_spider() -> void:
 	var to := _to_player()
 	match _state:
 		"lunge":
-			_desired = _charge_dir * 470.0
-			if _state_t <= 0.0:
+			if is_on_floor() and _state_t < 0.3:
 				_state = "recover"
-				_state_t = 0.6
+				_state_t = 0.5
 		"recover":
-			_desired = Vector2.ZERO
 			if _state_t <= 0.0:
 				_state = "idle"
 		_:
-			_seek(_player.global_position, speed, delta)
-			if _los and to.length() < 220.0 and _state_t <= -1.2:
+			if not _aware:
+				_patrol(speed * 0.6)
+				return
+			_chase(speed, true)
+			if _los and to.length() < 230.0 and is_on_floor() and _state_t <= -1.0:
 				_state = "lunge"
-				_state_t = 0.35
-				_charge_dir = to.normalized()
+				_state_t = 0.6
+				_dir = signf(to.x)
+				_jump = -380.0 + clampf(to.y, -200.0, 0.0)
+				_air_vx = _dir * 360.0
 
 
-func _ai_golem(delta: float) -> void:
+func _ai_golem() -> void:
 	var to := _to_player()
 	match _state:
 		"windup":
-			_desired = Vector2.ZERO
 			if _state_t <= 0.0:
-				_slam(90.0, damage * 1.2)
+				_slam(95.0, damage * 1.2)
 				_state = "idle"
-				_state_t = 2.5
+				_state_t = 2.2
 		_:
-			_seek(_player.global_position, speed, delta)
-			if to.length() < 90.0 and _state_t <= 0.0:
+			if not _aware:
+				_patrol(speed * 0.6)
+				return
+			_chase(speed, false)
+			if to.length() < 85.0 and _state_t <= 0.0:
 				_state = "windup"
 				_state_t = 0.65
-				_telegraph(global_position, 90.0, 0.65)
+				_telegraph(global_position, 95.0, 0.65)
 
 
 func _ai_boss(delta: float) -> void:
@@ -241,47 +320,48 @@ func _ai_boss(delta: float) -> void:
 		Game.toast("Страж призывает подмогу!", Color(1, 0.5, 0.5))
 		if cave != null:
 			for i in 3:
-				cave.call_deferred("spawn_enemy", ["slime", "bat", "spider"][i], global_position + Vector2.RIGHT.rotated(i * TAU / 3.0) * 70.0)
+				cave.call_deferred("spawn_enemy", ["slime", "bat", "spider"][i], global_position + Vector2((i - 1) * 90.0, -30.0))
 	match _state:
 		"burst":
-			_desired = Vector2.ZERO
 			_shoot_cd -= delta
 			if _shoot_cd <= 0.0:
 				_shoot_cd = 0.45
 				_phase += 1
-				var n := 14 if hp > max_hp * 0.5 else 20
+				var n := 12 if hp > max_hp * 0.5 else 18
 				for i in n:
-					_fire(Vector2.RIGHT.rotated(i * TAU / n + _phase * 0.2), 230.0, "orb", Color(0.8, 0.4, 1.0))
+					var a := PI + PI * float(i) / (n - 1) + (0.08 if _phase % 2 == 0 else 0.0)
+					_fire(Vector2.RIGHT.rotated(a), 240.0, "orb", Color(0.8, 0.4, 1.0))
 			if _state_t <= 0.0:
 				_state = "chase"
-				_state_t = 2.5
+				_state_t = 2.2
 		"windup":
-			_desired = Vector2.ZERO
 			if _state_t <= 0.0:
-				_state = "charge"
-				_state_t = 0.75
-		"charge":
-			_desired = _charge_dir * 520.0
-			if _state_t <= 0.0 or get_slide_collision_count() > 0 and _state_t < 0.6:
-				Game.shake(8.0)
-				_slam(80.0, damage)
+				_state = "leap"
+				_state_t = 2.0
+				_jump = -820.0
+				_air_vx = clampf(to.x * 1.1, -420.0, 420.0)
+		"leap":
+			if is_on_floor() and _state_t < 1.8:
+				Game.shake(10.0)
+				_slam(110.0, damage)
+				for s in [-1.0, 1.0]:
+					_fire(Vector2(s, 0), 320.0, "orb", Color(1.0, 0.5, 0.3), Vector2(0, radius - 8.0))
 				_state = "chase"
 				_state_t = 2.0
 		_:
-			_seek(_player.global_position, speed, delta)
-			if _state_t <= 0.0:
-				if randf() < 0.5:
+			_chase(speed, true)
+			if _state_t <= 0.0 and is_on_floor():
+				if randf() < 0.45:
 					_state = "burst"
 					_state_t = 1.4
 					_shoot_cd = 0.2
 				else:
 					_state = "windup"
-					_state_t = 0.7
-					_charge_dir = to.normalized()
-					_telegraph(global_position + _charge_dir * 60.0, 40.0, 0.7)
+					_state_t = 0.55
+					_telegraph(_player.global_position, 60.0, 0.9)
 
 
-func _fire(dir: Vector2, spd: float, kind: String, c: Color) -> void:
+func _fire(dir: Vector2, spd: float, kind: String, c: Color, offset: Vector2 = Vector2.ZERO) -> void:
 	var p := Projectile.new()
 	p.from_player = false
 	p.kind = kind
@@ -290,7 +370,7 @@ func _fire(dir: Vector2, spd: float, kind: String, c: Color) -> void:
 	p.color = c
 	p.radius = 5.0
 	p.life = 3.0
-	p.global_position = global_position + dir * (radius + 4.0)
+	p.global_position = global_position + offset + dir * (radius + 4.0)
 	get_parent().call_deferred("add_child", p)
 
 
@@ -323,7 +403,12 @@ func take_damage(amount: float, kb: Vector2 = Vector2.ZERO, element: String = ""
 	_flash = 0.12
 	_wake = minf(_wake, 0.1)
 	var kb_mult := 0.15 if is_boss else (0.4 if type == "golem" else 1.0)
-	_knock += kb * kb_mult
+	_knock.x += kb.x * kb_mult
+	if flying:
+		_knock.y += kb.y * kb_mult
+	elif is_on_floor() and kb != Vector2.ZERO:
+		_jump = -140.0 * kb_mult
+	_aware = true
 	if element == "ice":
 		_slow_t = 2.5
 	var fx = Effect.make("text", global_position + Vector2(randf_range(-8, 8), -radius - 6), Color(1, 0.9, 0.3) if crit else Color.WHITE, 0.7)
@@ -367,7 +452,7 @@ func _draw() -> void:
 		look = (_player.global_position - global_position).normalized()
 	match type:
 		"slime":
-			var sq := 1.0 + (0.15 * sin(_t * 12.0) if _state == "hop" else 0.0)
+			var sq := 0.85 if not is_on_floor() else 1.0 + 0.06 * sin(_t * 6.0)
 			draw_set_transform(Vector2.ZERO, 0, Vector2(sq, 2.0 - sq))
 			draw_circle(Vector2(0, 2), r, c.darkened(0.25))
 			draw_circle(Vector2(0, 0), r - 2.0, c)

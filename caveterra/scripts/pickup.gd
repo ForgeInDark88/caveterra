@@ -16,6 +16,10 @@ var _target := Vector2.ZERO
 func _ready() -> void:
 	z_index = 2
 	_target = position
+	# Предмет падает на ближайшую поверхность под ним.
+	var world = get_tree().get_first_node_in_group("world_tiles")
+	if world != null:
+		_target.y = world.ground_y_below(_target - Vector2(0, 8)) - 14.0
 	if pop_from != Vector2.INF:
 		_pop = 0.0
 		position = pop_from
@@ -30,7 +34,7 @@ func _process(delta: float) -> void:
 		position = pop_from.lerp(_target, _pop) + Vector2(0, -sin(_pop * PI) * 30.0)
 	if kind == "potion" and _pop >= 1.0:
 		var p = get_tree().get_first_node_in_group("player")
-		if p != null and not p.dead and p.global_position.distance_to(global_position) < 22.0 and Game.hp < Game.max_hp:
+		if p != null and not p.dead and p.global_position.distance_to(global_position) < 28.0 and Game.hp < Game.max_hp:
 			p.heal(Game.max_hp * 0.25)
 			queue_free()
 	queue_redraw()
