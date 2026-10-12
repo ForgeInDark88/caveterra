@@ -7,59 +7,81 @@ const Projectile = preload("res://scripts/projectile.gd")
 const Effect = preload("res://scripts/effect.gd")
 const WeaponDB = preload("res://scripts/weapon_db.gd")
 
-const SPEED := 230.0
-const DASH_SPEED := 680.0
-const DASH_TIME := 0.15
-const DASH_COOLDOWN := 0.75
+const SPEED := 240.0
+const ACCEL := 2200.0
+const GRAVITY := 1500.0
+const JUMP_VELOCITY := 680.0
+const MAX_FALL := 950.0
+const COYOTE := 0.1
+const JUMP_BUFFER := 0.12
+const DASH_SPEED := 720.0
+const DASH_TIME := 0.16
+const DASH_COOLDOWN := 0.7
+const HALF_W := 10.0
+const HALF_H := 20.0
 const RADIUS := 12.0
 const MANA_REGEN := 16.0
+const PLATFORM_LAYER := 5
 
 var attack_cd := 0.0
 var dash_timer := 0.0
 var dash_cd := 0.0
-var dash_dir := Vector2.RIGHT
+var dash_dir := 1.0
 var invuln := 0.0
 var flash := 0.0
 var aim := Vector2.RIGHT
+var facing := 1.0
 var knock := Vector2.ZERO
 var walk_t := 0.0
 var swing_t := 0.0
 var swing_side := 1.0
 var dead := false
 var camera: Camera2D
+var world = null
+var _coyote := 0.0
+var _jump_buffer := 0.0
+var _drop_t := 0.0
+var _air_jumps := 0
+var _land_squash := 0.0
+var _run_vx := 0.0
 
 
 func _ready() -> void:
 	add_to_group("player")
 	collision_layer = 2
-	collision_mask = 1
-	motion_mode = CharacterBody2D.MOTION_MODE_FLOATING
+	collision_mask = 1 | 16
+	motion_mode = CharacterBody2D.MOTION_MODE_GROUNDED
+	up_direction = Vector2.UP
+	floor_snap_length = 6.0
 	var cs := CollisionShape2D.new()
-	var c := CircleShape2D.new()
-	c.radius = RADIUS
-	cs.shape = c
+	var rect := RectangleShape2D.new()
+	rect.size = Vector2(HALF_W * 2.0, HALF_H * 2.0)
+	cs.shape = rect
 	add_child(cs)
 
 	var light := PointLight2D.new()
 	light.texture = Game.light_texture()
-	light.texture_scale = 3.2
+	light.texture_scale = 3.4
 	light.energy = 1.05
 	light.color = Color(1.0, 0.85, 0.65)
 	add_child(light)
 
 	camera = Camera2D.new()
-	camera.zoom = Vector2(1.25, 1.25)
+	camera.zoom = Vector2(1.35, 1.35)
 	camera.position_smoothing_enabled = true
-	camera.position_smoothing_speed = 8.0
+	camera.position_smoothing_speed = 7.0
+	camera.drag_vertical_enabled = true
+	camera.drag_top_margin = 0.15
+	camera.drag_bottom_margin = 0.15
 	add_child(camera)
 	camera.make_current()
 
 
 func set_camera_limits(size: Vector2) -> void:
-	camera.limit_left = -64
-	camera.limit_top = -64
-	camera.limit_right = int(size.x) + 64
-	camera.limit_bottom = int(size.y) + 64
+	camera.limit_left = 0
+	camera.limit_top = 0
+	camera.limit_right = int(size.x)
+	camera.limit_bottom = int(size.y)
 
 
 func _physics_process(delta: float) -> void:
@@ -70,37 +92,87 @@ func _physics_process(delta: float) -> void:
 	invuln -= delta
 	flash -= delta
 	swing_t -= delta
+	_drop_t -= delta
+	_coyote -= delta
+	_jump_buffer -= delta
+	_land_squash = maxf(0.0, _land_squash - delta * 4.0)
 	Game.mana = minf(Game.max_mana, Game.mana + MANA_REGEN * delta)
 
 	var to_mouse := get_global_mouse_position() - global_position
 	if to_mouse.length() > 2.0:
 		aim = to_mouse.normalized()
+	if absf(aim.x) > 0.05:
+		facing = signf(aim.x)
 
-	var input := Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	var dir := Input.get_axis("move_left", "move_right")
+	var was_on_floor := is_on_floor()
+	if was_on_floor:
+		_coyote = COYOTE
+		_air_jumps = 0
+
+	# Спрыгнуть вниз сквозь платформу
+	if Input.is_action_just_pressed("move_down") or (Input.is_action_pressed("move_down") and Input.is_action_just_pressed("jump")):
+		_drop_t = 0.25
+	set_collision_mask_value(PLATFORM_LAYER, _drop_t <= 0.0)
+
+	if Input.is_action_just_pressed("jump") and not Input.is_action_pressed("move_down"):
+		_jump_buffer = JUMP_BUFFER
+
 	if dash_timer > 0.0:
 		dash_timer -= delta
-		velocity = dash_dir * DASH_SPEED
+		velocity = Vector2(dash_dir * DASH_SPEED, 0.0)
+		_run_vx = dash_dir * SPEED
 	else:
-		velocity = input * SPEED + knock
+		_run_vx = move_toward(_run_vx, dir * SPEED, ACCEL * delta)
+		velocity.x = _run_vx + knock.x
+		velocity.y = minf(velocity.y + GRAVITY * delta, MAX_FALL)
+		if knock.y != 0.0:
+			velocity.y = knock.y
+			knock.y = 0.0
+		if _jump_buffer > 0.0 and _coyote > 0.0:
+			velocity.y = -JUMP_VELOCITY
+			_jump_buffer = 0.0
+			_coyote = 0.0
+			_puff(Vector2(0, HALF_H))
+		# Короткий прыжок, если кнопку отпустили
+		if Input.is_action_just_released("jump") and velocity.y < 0.0:
+			velocity.y *= 0.5
 		if Input.is_action_just_pressed("dash") and dash_cd <= 0.0:
-			dash_dir = input if input != Vector2.ZERO else aim
+			dash_dir = signf(dir) if dir != 0.0 else facing
 			dash_timer = DASH_TIME
 			dash_cd = DASH_COOLDOWN
 			invuln = maxf(invuln, DASH_TIME + 0.05)
-			var fx = Effect.make("ring", global_position, Color(0.8, 0.9, 1.0), 0.25)
-			fx.radius = 18.0
-			get_parent().add_child(fx)
-	knock = knock.move_toward(Vector2.ZERO, 1400.0 * delta)
-	if input != Vector2.ZERO:
-		walk_t += delta * 10.0
+			_puff(Vector2.ZERO)
+	knock.x = move_toward(knock.x, 0.0, 1400.0 * delta)
+	if dir != 0.0 and is_on_floor():
+		walk_t += delta * 12.0
 	move_and_slide()
+	if is_on_floor() and not was_on_floor:
+		_land_squash = 1.0
+	if is_on_wall():
+		_run_vx = 0.0
 
+	_check_spikes()
 	_handle_weapon_input()
 	_handle_interaction()
 
 	if camera:
 		camera.offset = Vector2(randf_range(-1, 1), randf_range(-1, 1)) * Game.shake_strength
 	queue_redraw()
+
+
+func _puff(off: Vector2) -> void:
+	var fx = Effect.make("ring", global_position + off, Color(0.85, 0.85, 0.9), 0.22)
+	fx.radius = 14.0
+	get_parent().add_child(fx)
+
+
+func _check_spikes() -> void:
+	if world == null or invuln > 0.0:
+		return
+	var t: Vector2i = world.world_to_tile(global_position + Vector2(0, HALF_H - 4))
+	if world.get_tile(t.x, t.y) == 3:  # шипы
+		take_damage(12.0, Vector2(0, -520))
 
 
 func _handle_weapon_input() -> void:
@@ -235,7 +307,8 @@ func take_damage(amount: float, kb: Vector2 = Vector2.ZERO, _element: String = "
 	Game.hp -= amount
 	invuln = 0.6
 	flash = 0.2
-	knock += kb
+	knock.x += kb.x
+	knock.y = minf(kb.y, -180.0) if kb != Vector2.ZERO else 0.0
 	Game.shake(7.0)
 	var fx = Effect.make("text", global_position + Vector2(0, -20), Color(1, 0.3, 0.3), 0.8)
 	fx.text = str(roundi(amount))
@@ -259,38 +332,49 @@ func heal(amount: float) -> void:
 
 # ------------------------------------------------------------------ отрисовка
 func _draw() -> void:
-	var bob := sin(walk_t) * 1.5
 	var blink := invuln > 0.0 and int(Time.get_ticks_msec() / 60) % 2 == 0
-	var body_col := Color(0.25, 0.55, 0.85)
+	var a := 0.45 if blink else 1.0
+	var cloak := Color(0.22, 0.45, 0.75, a)
+	var skin := Color(0.95, 0.8, 0.65, a)
 	if flash > 0.0:
-		body_col = Color(1, 1, 1)
-	if blink:
-		body_col.a = 0.45
-	# тень
-	draw_set_transform(Vector2(0, 12), 0, Vector2(1, 0.4))
-	draw_circle(Vector2.ZERO, 12.0, Color(0, 0, 0, 0.35))
+		cloak = Color(1, 1, 1, a)
+	var sq := _land_squash * 0.25
+	draw_set_transform(Vector2(0, HALF_H * sq), 0, Vector2(1.0 + sq, 1.0 - sq))
+	var moving := is_on_floor() and absf(velocity.x) > 20.0
+	var step := sin(walk_t) * 5.0 if moving else 0.0
+	var air := not is_on_floor()
+	# ноги
+	var legc := Color(0.25, 0.2, 0.18, a)
+	if air:
+		draw_line(Vector2(-4, 8), Vector2(-6, 18), legc, 4.0)
+		draw_line(Vector2(4, 8), Vector2(7, 15), legc, 4.0)
+	else:
+		draw_line(Vector2(-4, 8), Vector2(-4 + step, HALF_H), legc, 4.0)
+		draw_line(Vector2(4, 8), Vector2(4 - step, HALF_H), legc, 4.0)
+	# тело и плащ
+	draw_colored_polygon(PackedVector2Array([Vector2(-9, -6), Vector2(9, -6), Vector2(11, 10), Vector2(-11, 10)]), cloak)
+	draw_colored_polygon(PackedVector2Array([Vector2(-9 * facing, -6), Vector2(-15 * facing, 12 + step * 0.3), Vector2(-6 * facing, 10)]), cloak.darkened(0.3))
+	draw_rect(Rect2(-9, 2, 18, 3), Color(0.45, 0.3, 0.15, a))
+	# голова и капюшон
+	draw_circle(Vector2(0, -13), 8.0, cloak.darkened(0.15))
+	draw_circle(Vector2(2.0 * facing, -12), 6.0, skin)
+	draw_circle(Vector2(4.5 * facing, -13), 1.5, Color(0.1, 0.1, 0.1, a))
 	draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
-	# плащ и тело
-	draw_circle(Vector2(0, bob), RADIUS, body_col.darkened(0.35))
-	draw_circle(Vector2(0, bob - 2), RADIUS - 2.0, body_col)
-	# голова
-	draw_circle(Vector2(0, bob - 10), 7.0, Color(0.95, 0.8, 0.65, body_col.a))
-	draw_circle(Vector2(0, bob - 10) + aim * 3.0, 1.6, Color(0.1, 0.1, 0.1, body_col.a))
 
 	var w := Game.current_weapon()
 	if w.is_empty():
 		return
 	var ang := aim.angle()
-	var hand := aim * 14.0 + Vector2(0, bob)
+	var hand := aim * 12.0 + Vector2(0, -2)
 	if w["type"] == "sword":
 		var swing_off := 0.0
 		if swing_t > 0.0:
 			swing_off = swing_side * (swing_t / 0.18 - 0.5) * 2.2
 		ang += swing_off
-		hand = Vector2.RIGHT.rotated(ang) * 14.0 + Vector2(0, bob)
+		hand = Vector2.RIGHT.rotated(ang) * 12.0 + Vector2(0, -2)
 		WeaponDB.draw_icon(self, w, hand + Vector2.RIGHT.rotated(ang) * 8.0, ang, 0.9)
 	elif w["type"] == "bow":
 		WeaponDB.draw_icon(self, w, hand + aim * (2.0 - maxf(swing_t, 0.0) * 30.0), ang, 0.9)
 	else:
 		WeaponDB.draw_icon(self, w, hand + aim * 4.0, ang, 0.75 + maxf(swing_t, 0.0) * 3.0)
-		WeaponDB.draw_icon(self, w, hand.rotated(0.9) * 0.8, ang, 0.45)
+		WeaponDB.draw_icon(self, w, Vector2(-6 * facing, 2), ang, 0.4)

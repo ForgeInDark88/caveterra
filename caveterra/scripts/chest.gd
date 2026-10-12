@@ -37,13 +37,13 @@ func interact(_player) -> void:
 	var p := Pickup.new()
 	p.kind = "weapon"
 	p.weapon = w
-	p.position = position + Vector2(0, 34)
+	p.position = position + Vector2(Game.rng.randf_range(-40, 40), -10)
 	p.pop_from = position
 	get_parent().add_child(p)
 	if Game.rng.randf() < 0.4:
 		var pot := Pickup.new()
 		pot.kind = "potion"
-		pot.position = position + Vector2(Game.rng.randf_range(-30, 30), 30)
+		pot.position = position + Vector2(Game.rng.randf_range(-50, 50), -10)
 		pot.pop_from = position
 		get_parent().add_child(pot)
 	var fx = Effect.make("ring", position, w["color"], 0.5)

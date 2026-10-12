@@ -43,6 +43,19 @@ func _draw() -> void:
 				var p := Vector2((i - 1) * 8.0, (i % 2) * 4.0)
 				draw_line(p + Vector2(0, 6), p, Color(0.85, 0.85, 0.75), 2.0)
 				draw_circle(p, 4.5, Color(0.3, 0.9, 0.55, 0.8 + 0.2 * sin(_t * 3.0 + i)))
+		3:  # сталактит (висит с потолка)
+			var hl := 16.0 + seed_value * 22.0
+			draw_colored_polygon(PackedVector2Array([Vector2(-8, -16), Vector2(8, -16), Vector2(1, -16 + hl)]), Color(0.3, 0.26, 0.24))
+			draw_circle(Vector2(1, -16 + hl + 3.0 + fmod(_t * 20.0 + seed_value * 30.0, 30.0)), 1.5, Color(0.5, 0.7, 0.9, 0.6))
+		4:  # лианы
+			var pts := PackedVector2Array()
+			var vl := 30.0 + seed_value * 50.0
+			for i in 8:
+				var k := i / 7.0
+				pts.append(Vector2(sin(_t * 1.5 + k * 4.0 + seed_value * 9.0) * 4.0 * k, -16 + vl * k))
+			draw_polyline(pts, Color(0.25, 0.45, 0.22), 2.0)
+			for i in range(1, 8, 2):
+				draw_circle(pts[i] + Vector2(3, 0), 2.5, Color(0.3, 0.55, 0.25))
 		_:  # сталагмит/камень
 			draw_colored_polygon(PackedVector2Array([Vector2(-9, 8), Vector2(-2, -12 - seed_value * 8.0), Vector2(9, 8)]), Color(0.3, 0.26, 0.24))
 			draw_line(Vector2(-2, -12 - seed_value * 8.0), Vector2(3, 6), Color(0.4, 0.35, 0.32), 1.5)

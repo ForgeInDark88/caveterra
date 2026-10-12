@@ -57,12 +57,12 @@ func _input(event: InputEvent) -> void:
 
 # ---------------------------------------------------------------- управление
 func _setup_input() -> void:
-	_add_keys("move_up", [KEY_W, KEY_UP])
 	_add_keys("move_down", [KEY_S, KEY_DOWN])
 	_add_keys("move_left", [KEY_A, KEY_LEFT])
 	_add_keys("move_right", [KEY_D, KEY_RIGHT])
+	_add_keys("jump", [KEY_SPACE, KEY_W, KEY_UP])
 	_add_keys("interact", [KEY_E])
-	_add_keys("dash", [KEY_SPACE, KEY_SHIFT])
+	_add_keys("dash", [KEY_SHIFT])
 	_add_keys("switch_weapon", [KEY_Q])
 	_add_keys("pause", [KEY_ESCAPE])
 	_add_keys("toggle_fullscreen", [KEY_F11])

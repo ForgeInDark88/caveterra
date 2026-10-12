@@ -50,7 +50,7 @@ func _ready() -> void:
 	play.call_deferred("grab_focus")
 
 	_controls = Label.new()
-	_controls.text = "WASD / стрелки — движение\nМышь — прицел, ЛКМ — атака\nПробел / Shift — рывок (неуязвимость)\nE — открыть сундук / подобрать / войти\nQ или 1-4 — смена оружия\nEsc — пауза,  F11 — полный экран"
+	_controls.text = "A / D — ходить влево / вправо\nW / Пробел — прыжок (держите — выше)\nS — спрыгнуть вниз сквозь платформу\nМышь — прицел, ЛКМ — атака\nShift — рывок (неуязвимость)\nE — открыть сундук / подобрать / спуститься\nQ или 1-4 — смена оружия\nEsc — пауза,  F11 — полный экран"
 	_controls.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_controls.add_theme_font_size_override("font_size", 18)
 	_controls.visible = false

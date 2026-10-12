@@ -1,14 +1,19 @@
 extends Node2D
-## Сетка тайлов пещеры: отрисовка, коллизии стен и поиск пути (AStarGrid2D).
+## Сетка тайлов (вид сбоку): отрисовка, коллизии стен и проходимых снизу платформ.
+## 0 — воздух, 1 — камень, 2 — платформа (можно запрыгнуть снизу и спрыгнуть вниз), 3 — шипы.
 
 const TILE := 32
+const AIR := 0
+const SOLID := 1
+const PLATFORM := 2
+const SPIKES := 3
 
 var w := 0
 var h := 0
-var cells := PackedByteArray()   # 0 — пол, 1 — стена
-var floor_color := Color(0.20, 0.17, 0.16)
+var cells := PackedByteArray()
+var floor_color := Color(0.20, 0.17, 0.16)   # цвет заднего фона пещеры
 var wall_color := Color(0.33, 0.27, 0.25)
-var astar := AStarGrid2D.new()
+var moss_color := Color(0.30, 0.45, 0.25)
 var _seed := 0
 
 
@@ -18,19 +23,34 @@ func setup(grid_w: int, grid_h: int, grid: PackedByteArray, palette_seed: int = 
 	cells = grid
 	_seed = palette_seed
 	z_index = -10
+	add_to_group("world_tiles")
 	_build_collision()
-	_build_astar()
 	queue_redraw()
 
 
-func is_wall(x: int, y: int) -> bool:
+func get_tile(x: int, y: int) -> int:
 	if x < 0 or y < 0 or x >= w or y >= h:
-		return true
-	return cells[y * w + x] == 1
+		return SOLID
+	return cells[y * w + x]
+
+
+func is_wall(x: int, y: int) -> bool:
+	return get_tile(x, y) == SOLID
+
+
+## Можно ли стоять на тайле (камень или платформа).
+func is_standable(x: int, y: int) -> bool:
+	var t := get_tile(x, y)
+	return t == SOLID or t == PLATFORM
 
 
 func tile_center(t: Vector2i) -> Vector2:
 	return Vector2(t.x * TILE + TILE * 0.5, t.y * TILE + TILE * 0.5)
+
+
+## Точка на полу тайла (низ тайла) — сюда ставятся сундуки, двери и т.д.
+func tile_floor(t: Vector2i) -> Vector2:
+	return Vector2(t.x * TILE + TILE * 0.5, (t.y + 1) * TILE)
 
 
 func world_to_tile(p: Vector2) -> Vector2i:
@@ -41,50 +61,51 @@ func pixel_size() -> Vector2:
 	return Vector2(w * TILE, h * TILE)
 
 
-func find_path(from: Vector2, to: Vector2) -> PackedVector2Array:
-	var a := world_to_tile(from)
-	var b := world_to_tile(to)
-	if not astar.is_in_boundsv(a) or not astar.is_in_boundsv(b):
-		return PackedVector2Array()
-	if astar.is_point_solid(a) or astar.is_point_solid(b):
-		return PackedVector2Array()
-	return astar.get_point_path(a, b)
-
-
-func _build_astar() -> void:
-	astar.region = Rect2i(0, 0, w, h)
-	astar.cell_size = Vector2(TILE, TILE)
-	astar.offset = Vector2(TILE * 0.5, TILE * 0.5)
-	astar.diagonal_mode = AStarGrid2D.DIAGONAL_MODE_ONLY_IF_NO_OBSTACLES
-	astar.update()
-	for y in h:
-		for x in w:
-			if is_wall(x, y):
-				astar.set_point_solid(Vector2i(x, y), true)
+## Высота поверхности, на которую упадёт предмет из точки p.
+func ground_y_below(p: Vector2) -> float:
+	var t := world_to_tile(p)
+	for y in range(maxi(t.y, 0), h):
+		if is_standable(t.x, y):
+			return y * TILE
+	return p.y
 
 
 func _build_collision() -> void:
-	var body := StaticBody2D.new()
-	body.collision_layer = 1
-	body.collision_mask = 0
-	body.add_to_group("walls")
-	add_child(body)
-	# Склеиваем горизонтальные отрезки стен в прямоугольники.
+	var walls := StaticBody2D.new()
+	walls.collision_layer = 1
+	walls.collision_mask = 0
+	walls.add_to_group("walls")
+	add_child(walls)
+	var platforms := StaticBody2D.new()
+	platforms.collision_layer = 16
+	platforms.collision_mask = 0
+	platforms.add_to_group("platforms")
+	add_child(platforms)
+	# Склеиваем горизонтальные отрезки в прямоугольники.
 	for y in h:
 		var x := 0
 		while x < w:
-			if not is_wall(x, y):
+			var t := get_tile(x, y)
+			if t != SOLID and t != PLATFORM:
 				x += 1
 				continue
 			var start := x
-			while x < w and is_wall(x, y):
+			while x < w and get_tile(x, y) == t:
 				x += 1
 			var shape := CollisionShape2D.new()
 			var rect := RectangleShape2D.new()
-			rect.size = Vector2((x - start) * TILE, TILE)
-			shape.shape = rect
-			shape.position = Vector2(start * TILE + (x - start) * TILE * 0.5, y * TILE + TILE * 0.5)
-			body.add_child(shape)
+			var cx := start * TILE + (x - start) * TILE * 0.5
+			if t == SOLID:
+				rect.size = Vector2((x - start) * TILE, TILE)
+				shape.position = Vector2(cx, y * TILE + TILE * 0.5)
+				shape.shape = rect
+				walls.add_child(shape)
+			else:
+				rect.size = Vector2((x - start) * TILE, 10)
+				shape.position = Vector2(cx, y * TILE + 5)
+				shape.shape = rect
+				shape.one_way_collision = true
+				platforms.add_child(shape)
 
 
 func _hash(x: int, y: int) -> float:
@@ -94,28 +115,54 @@ func _hash(x: int, y: int) -> float:
 
 
 func _draw() -> void:
-	# Внешняя тьма за пределами комнаты
-	draw_rect(Rect2(-TILE * 20, -TILE * 20, (w + 40) * TILE, (h + 40) * TILE), Color(0.03, 0.025, 0.035))
+	# Тьма за пределами комнаты
+	draw_rect(Rect2(-TILE * 30, -TILE * 30, (w + 60) * TILE, (h + 60) * TILE), Color(0.03, 0.025, 0.035))
+	var back := floor_color.darkened(0.35)
 	for y in h:
 		for x in w:
 			var r := Rect2(x * TILE, y * TILE, TILE, TILE)
 			var v := _hash(x, y)
-			if not is_wall(x, y):
-				draw_rect(r, floor_color.lightened(v * 0.08).darkened(0.04))
-				if v > 0.86:
-					draw_circle(r.position + Vector2(8 + v * 14, 10 + v * 10), 2.0 + v * 2.0, floor_color.darkened(0.3))
-				elif v < 0.06:
-					draw_line(r.position + Vector2(6, 20), r.position + Vector2(22, 14), floor_color.darkened(0.35), 1.5)
-			else:
+			var t := get_tile(x, y)
+			if t != SOLID:
+				# Задняя стена пещеры
+				draw_rect(r, back.lightened(v * 0.06))
+				if v > 0.9:
+					draw_circle(r.position + Vector2(6 + v * 18, 8 + v * 14), 3.0 + v * 3.0, back.darkened(0.25))
+				elif v < 0.05:
+					draw_line(r.position + Vector2(4, 22), r.position + Vector2(26, 10), back.darkened(0.3), 2.0)
+			if t == SOLID:
 				var edge := not is_wall(x - 1, y) or not is_wall(x + 1, y) or not is_wall(x, y - 1) or not is_wall(x, y + 1)
 				if edge:
 					draw_rect(r, wall_color.lightened(v * 0.1))
-					# «верх» скалы над полом — объём
-					if not is_wall(x, y + 1):
-						draw_rect(Rect2(r.position + Vector2(0, TILE - 7), Vector2(TILE, 7)), wall_color.darkened(0.45))
+					draw_rect(Rect2(r.position + Vector2(3, 3), Vector2(TILE - 6, TILE - 6)), wall_color.lightened(0.05 + v * 0.08))
+					if v > 0.65:
+						draw_circle(r.position + Vector2(8 + v * 14, 14 + v * 8), 2.5, wall_color.darkened(0.25))
+					# Поверхность пола: мох и светлая кромка
 					if not is_wall(x, y - 1):
-						draw_rect(Rect2(r.position, Vector2(TILE, 4)), wall_color.lightened(0.25))
-					if v > 0.7:
-						draw_circle(r.position + Vector2(10 + v * 10, 12), 3.0, wall_color.darkened(0.2))
+						draw_rect(Rect2(r.position, Vector2(TILE, 5)), wall_color.lightened(0.3))
+						if v > 0.35:
+							draw_rect(Rect2(r.position + Vector2(0, -2), Vector2(TILE, 4)), moss_color.lightened(v * 0.2))
+							for i in 3:
+								var gx := 4.0 + i * 11.0 + v * 4.0
+								draw_line(r.position + Vector2(gx, 0), r.position + Vector2(gx + 2, -5 - v * 4), moss_color, 1.5)
+					# Потолок: тень
+					if not is_wall(x, y + 1):
+						draw_rect(Rect2(r.position + Vector2(0, TILE - 5), Vector2(TILE, 5)), wall_color.darkened(0.45))
 				else:
-					draw_rect(r, Color(0.08, 0.065, 0.07).lightened(v * 0.04))
+					draw_rect(r, Color(0.09, 0.07, 0.075).lightened(v * 0.04))
+			elif t == PLATFORM:
+				var plank := Color(0.42, 0.29, 0.17)
+				draw_rect(Rect2(r.position, Vector2(TILE, 9)), plank.lightened(v * 0.1))
+				draw_rect(Rect2(r.position, Vector2(TILE, 2)), plank.lightened(0.3))
+				draw_line(r.position + Vector2(TILE - 1, 0), r.position + Vector2(TILE - 1, 9), plank.darkened(0.4), 1.0)
+				# опоры, если платформа висит
+				if get_tile(x - 1, y) != PLATFORM:
+					draw_line(r.position + Vector2(4, 9), r.position + Vector2(4, 16), plank.darkened(0.3), 3.0)
+				if get_tile(x + 1, y) != PLATFORM:
+					draw_line(r.position + Vector2(TILE - 4, 9), r.position + Vector2(TILE - 4, 16), plank.darkened(0.3), 3.0)
+			elif t == SPIKES:
+				for i in 4:
+					var bx := r.position.x + i * 8.0
+					var by := r.position.y + TILE
+					draw_colored_polygon(PackedVector2Array([Vector2(bx, by), Vector2(bx + 4, by - 14 - v * 4), Vector2(bx + 8, by)]), Color(0.7, 0.68, 0.72))
+					draw_line(Vector2(bx + 4, by - 14 - v * 4), Vector2(bx + 4, by - 9), Color(0.75, 0.2, 0.2), 2.0)
