@@ -11,10 +11,19 @@ config_version=5
 [application]
 
 config/name="CAVETERRA"
+run/main_scene="res://scenes/main_menu.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
+[autoload]
+
+Game="*res://scripts/game.gd"
+
 [display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/mode=3
 
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
@@ -24,5 +33,7 @@ window/stretch/aspect="expand"
 3d/physics_engine="Jolt Physics"
 
 [rendering]
+
+environment/defaults/default_clear_color=Color(0.03, 0.025, 0.035, 1)
 
 rendering_device/driver.windows="d3d12"
